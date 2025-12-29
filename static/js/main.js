@@ -39,9 +39,14 @@ socket.on('connect', () => {
     socket.on('game_state', (data) => {
         updatePlayers(data.players, data.roles);
         updatePhase(data.phase, data.timer);
-        // Show start button if in lobby and enough players (simplified: assume first player is host)
-        if (data.phase === 'lobby' && data.players.length >= 5 && data.players[0] === playerName) {
-            document.getElementById('start-btn-container').innerHTML = '<button id="start-game-btn" class="mt-4 bg-red-600 text-white p-2 rounded w-full" onclick="startGame()">Start Game</button>';
+        const startBtnContainer = document.getElementById('start-btn-container');
+        startBtnContainer.innerHTML = '';  // Clear previous content
+        if (data.phase === 'lobby' && data.players[0] === playerName) {
+            if (data.players.length >= 5) {
+                startBtnContainer.innerHTML = '<button id="start-game-btn" class="mt-4 bg-red-600 text-white p-2 rounded w-full" onclick="startGame()">Start Game</button>';
+            } else {
+                startBtnContainer.innerHTML = '<p class="mt-4 text-gray-600">Waiting for more players (need at least 5 to start).</p>';
+            }
         }
     });
 
@@ -75,34 +80,4 @@ function updatePlayers(players, roles) {
     playersList.innerHTML = '';
     if (players && roles && roles.length > 0) {
         players.forEach((player, index) => {
-            const role = roles[index] ? (roles[index].startsWith('dead_') ? 'dead' : roles[index]) : 'pending';
-            const icon = role === 'mafia' ? '👹' : '😇';
-            playersList.innerHTML += `<div>${player} ${role === 'dead' ? '(Dead)' : ''} ${icon}</div>`;
-        });
-    } else {
-        players.forEach(player => {
-            playersList.innerHTML += `<div>${player}</div>`;
-        });
-    }
-}
-
-function updatePhase(phase, timer) {
-    const phaseInfo = document.getElementById('phase-info');
-    phaseInfo.textContent = `Phase: ${phase}`;
-    const timerDisplay = document.getElementById('timer');
-    timerDisplay.textContent = `Time left: ${timer}s`;
-    if (timer > 0) {
-        let timeLeft = timer;
-        const interval = setInterval(() => {
-            timeLeft--;
-            timerDisplay.textContent = `Time left: ${timeLeft}s`;
-            if (timeLeft <= 0) clearInterval(interval);
-        }, 1000);
-    }
-    // Simplified phase logic (to be expanded)
-    if (phase === 'night') {
-        document.getElementById('action-panel').classList.remove('hidden');
-    } else if (phase === 'day') {
-        document.getElementById('vote-panel').classList.remove('hidden');
-    }
-}
+            const role = roles[index] ? (roles[index].startsWith('dead_') ?
