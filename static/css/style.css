@@ -1,0 +1,7 @@
+body {
+    font-family: Arial, sans-serif;
+}
+#game-container {
+    max-width: 600px;
+    margin: 0 auto;
+}

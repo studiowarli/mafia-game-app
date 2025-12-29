@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mafia Game</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="bg-gray-100">
+    <div id="game-container" class="container mx-auto p-4">
+        <h1 class="text-3xl font-bold text-red-600 text-center">Mafia</h1>
+        <div id="game-code" class="mt-4 text-center">Game code: <span id="code-display"></span></div>
+        <div id="players-list" class="mt-4"></div>
+        <div id="phase-info" class="mt-4 text-center"></div>
+        <div id="action-panel" class="mt-4 hidden">
+            <select id="target-select" class="p-2 border rounded w-full"></select>
+            <button id="action-btn" class="mt-2 bg-red-600 text-white p-2 rounded w-full">Submit Action</button>
+        </div>
+        <div id="timer" class="mt-4 text-center text-2xl"></div>
+        <div id="vote-panel" class="mt-4 hidden">
+            <select id="vote-select" class="p-2 border rounded w-full"></select>
+            <button id="vote-btn" class="mt-2 bg-red-600 text-white p-2 rounded w-full">Vote</button>
+            <button id="skip-vote" class="mt-2 bg-gray-600 text-white p-2 rounded w-full">Skip Discussion</button>
+        </div>
+    </div>
+    <script src="https://cdn.socket.io/4.1.2/socket.io.min.js"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
