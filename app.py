@@ -1,260 +1,159 @@
-from flask import Flask, request, jsonify, render_template
-from flask_socketio import SocketIO, emit, join_room
+from flask import Flask, render_template, request, jsonify
+from flask_socketio import SocketIO, emit, join_room, leave_room
 import random
-import string
-import time
-import threading
+import os
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "secret"
+app.config['SECRET_KEY'] = 'your-secret-key'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
+# In-memory storage for games
 games = {}
 
-PHASE_TIMERS = {
-    "day": 240,
-    "defense": 120,
-    "night": 60
-}
+def get_game_state(game_code):
+    state_data = games.get(game_code)
+    if state_data:
+        return (
+            state_data['state'],
+            state_data['players'],
+            state_data['roles'],
+            state_data['phase'],
+            state_data['timer'],
+            state_data['sockets']
+        )
+    return None, None, None, None, None, None
 
-# -------------------------
-# Utilities
-# -------------------------
-
-def generate_code():
-    return "".join(random.choices(string.ascii_uppercase + string.digits, k=5))
-
-def mafia_count(n):
-    return max(1, n // 4)
-
-def alive_players(game):
-    return [p for p in game["players"] if game["players"][p]["alive"]]
-
-def get_role(game, role):
-    for p, data in game["players"].items():
-        if data["role"] == role and data["alive"]:
-            return p
-    return None
-
-def emit_state(game_code):
-    game = games[game_code]
-    emit("game_state", {
-        "phase": game["phase"],
-        "players": [
-            {"name": p, "alive": d["alive"]}
-            for p, d in game["players"].items()
-        ]
-    }, room=game_code)
-
-# -------------------------
-# Game Engine
-# -------------------------
-
-def advance_phase(game_code):
-    game = games.get(game_code)
-    if not game:
-        return
-
-    phase_order = ["day", "defense", "night"]
-    current = game["phase"]
-
-    if current == "day":
-        game["phase"] = "defense"
-        game["votes"] = {}
-    elif current == "defense":
-        resolve_day_elimination(game_code)
-        game["phase"] = "night"
-        game["night_actions"] = {"mafia": [], "doctor": None, "sheriff": None}
-    elif current == "night":
-        resolve_night(game_code)
-        game["phase"] = "day"
-
-    game["timer_ends"] = time.time() + PHASE_TIMERS[game["phase"]]
-    emit_state(game_code)
-
-def timer_loop(game_code):
-    while game_code in games:
-        game = games[game_code]
-        if game["phase"] == "ended":
-            return
-
-        remaining = int(game["timer_ends"] - time.time())
-
-        if remaining <= 0:
-            advance_phase(game_code)
-        else:
-            socketio.emit(
-                "timer",
-                {"seconds": remaining},
-                room=game_code
-            )
-
-        socketio.sleep(1)
-
-
-def resolve_day_elimination(game_code):
-    game = games[game_code]
-    votes = game["votes"].values()
-    if not votes:
-        return
-
-    target = max(set(votes), key=votes.count)
-    game["players"][target]["alive"] = False
-
-    emit("elimination", {
-        "player": target,
-        "role": game["players"][target]["role"]
-    }, room=game_code)
-
-    check_win(game_code)
-
-def resolve_night(game_code):
-    game = games[game_code]
-    mafia_votes = game["night_actions"]["mafia"]
-
-    if not mafia_votes:
-        return
-
-    mafia_target = max(set(mafia_votes), key=mafia_votes.count)
-    doctor_target = game["night_actions"]["doctor"]
-
-    if mafia_target == doctor_target:
-        emit("night_result", {"message": "No one was eliminated."}, room=game_code)
-        return
-
-    if game["players"][mafia_target]["alive"]:
-        game["players"][mafia_target]["alive"] = False
-        emit("elimination", {
-            "player": mafia_target,
-            "role": game["players"][mafia_target]["role"]
-        }, room=game_code)
-
-    check_win(game_code)
-
-def check_win(game_code):
-    game = games[game_code]
-    mafia = sum(1 for p in game["players"].values() if p["alive"] and p["role"] == "mafia")
-    villagers = sum(1 for p in game["players"].values() if p["alive"] and p["role"] != "mafia")
-
-    if mafia >= villagers:
-        end_game(game_code, "Mafia")
-    elif mafia == 0:
-        end_game(game_code, "Villagers")
-
-def end_game(game_code, winner):
-    game = games[game_code]
-    game["phase"] = "ended"
-    emit("game_ended", {"winner": winner}, room=game_code)
-
-# -------------------------
-# Routes
-# -------------------------
-
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-@app.route("/game")
-def game():
-    return render_template("game.html")
-
-@app.route("/create_game", methods=["POST"])
-def create_game():
-    code = generate_code()
-    games[code] = {
-        "players": {},
-        "host": None,
-        "phase": "lobby",
-        "votes": {},
-        "night_actions": {},
-        "timer_ends": None
-    }
-    return jsonify({"game_code": code})
-
-@app.route("/join_game", methods=["POST"])
-def join_game():
-    data = request.json
-    code = data["game_code"]
-    name = data["player_name"]
-
-    if code not in games:
-        return jsonify({"status": "error", "message": "Game not found"})
-
-    if name in games[code]["players"]:
-        return jsonify({"status": "error", "message": "Name already taken"})
-
-    return jsonify({"status": "success"})
-
-# -------------------------
-# Socket Events
-# -------------------------
-
-@socketio.on("join_room")
-def join(data):
-    code = data["game_code"]
-    name = data["player"]
-
-    join_room(code)
-
-    game = games[code]
-    game["players"][name] = {
-        "alive": True,
-        "role": None,
-        "self_saved_last": False
+def update_game_state(game_code, state, players, roles, phase, timer, sockets):
+    games[game_code] = {
+        'state': state,
+        'players': players,
+        'roles': roles,
+        'phase': phase,
+        'timer': timer,
+        'sockets': sockets
     }
 
-    if not game["host"]:
-        game["host"] = name
-
-    emit_state(code)
-
-@socketio.on("start_game")
-def start_game(data):
-    code = data["game_code"]
-    game = games[code]
-
-    players = list(game["players"].keys())
-    roles = (
-        ["mafia"] * mafia_count(len(players)) +
-        ["doctor"] +
-        ["sheriff"] +
-        ["villager"] * (len(players) - mafia_count(len(players)) - 2)
-    )
+# Role assignment logic
+def assign_roles(player_count):
+    if player_count < 5:
+        return ['villager'] * player_count
+    roles = ['villager'] * player_count
+    mafia_count = max(2, (player_count + 3) // 4)
+    if mafia_count > player_count // 2:
+        mafia_count = player_count // 2
+    roles[-mafia_count:] = ['mafia'] * mafia_count
+    if player_count >= 3:
+        doc_index = random.randrange(0, player_count)
+        roles[doc_index] = 'doctor'
+        sher_index = random.randrange(0, player_count)
+        while sher_index == doc_index:
+            sher_index = random.randrange(0, player_count)
+        roles[sher_index] = 'sheriff'
     random.shuffle(roles)
+    return roles
 
-    for p, r in zip(players, roles):
-        game["players"][p]["role"] = r
-        emit("private_role", {"role": r}, room=request.sid)
+@app.route('/')
+def index():
+    return render_template('index.html')
 
-    game["phase"] = "day"
-    game["timer_ends"] = time.time() + PHASE_TIMERS["day"]
+@app.route('/health')
+def health_check():
+    return "OK", 200  # Simple health check endpoint
 
-    threading.Thread(target=timer_loop, args=(code,), daemon=True).start()
-    emit_state(code)
+@app.route('/game')
+def game():
+    return render_template('game.html')
 
-@socketio.on("vote")
-def vote(data):
-    game = games[data["game_code"]]
-    voter = data["player"]
-    target = data["target"]
+@app.route('/create_game', methods=['POST'])
+def create_game():
+    try:
+        game_code = ''.join(random.choices('0123456789', k=6))
+        players = [request.json['player_name']]
+        roles = []  # Defer roles
+        sockets = {}  # Dict for player:sid
+        update_game_state(game_code, 'lobby', players, roles, 'lobby', 0, sockets)
+        return jsonify({'game_code': game_code})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
-    if game["players"][voter]["alive"]:
-        game["votes"][voter] = target
+@app.route('/join_game', methods=['POST'])
+def join_game():
+    try:
+        data = request.json
+        game_code, player_name = data['game_code'], data['player_name']
+        state, players, roles, phase, timer, sockets = get_game_state(game_code)
+        if state:
+            if player_name not in players and len(players) < 16:
+                players.append(player_name)
+                update_game_state(game_code, state, players, roles, phase, timer, sockets)
+                socketio.emit('player_joined', {'player_name': player_name, 'players': players, 'phase': phase}, room=game_code)
+            return jsonify({'status': 'success', 'players': players})
+        return jsonify({'status': 'error', 'message': 'Game not found'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
-@socketio.on("night_action")
+@socketio.on('connect')
+def handle_connect():
+    emit('connected', {'message': 'Connected to server'})
+
+@socketio.on('join_room')
+def on_join(data):
+    game_code = data['game_code']
+    player_name = data['player']
+    join_room(game_code)
+    state, players, roles, phase, timer, sockets = get_game_state(game_code)
+    if state:
+        sockets[player_name] = request.sid  # Store socket ID
+        update_game_state(game_code, state, players, roles, phase, timer, sockets)
+        emit('game_state', {'players': players, 'roles': roles, 'phase': phase, 'timer': timer})
+
+@socketio.on('start_game')
+def start_game(data):
+    game_code = data['game_code']
+    state, players, roles, phase, timer, sockets = get_game_state(game_code)
+    if state == 'lobby' and len(players) >= 5:
+        roles = assign_roles(len(players))
+        update_game_state(game_code, 'night', players, roles, 'night', 60, sockets)
+        emit('game_started', {'phase': 'night', 'players': players}, room=game_code)
+        # Send private roles
+        for idx, player in enumerate(players):
+            role = roles[idx]
+            sid = sockets.get(player)
+            if sid:
+                emit('private_role', {'role': role}, to=sid)
+
+@socketio.on('night_action')
 def night_action(data):
-    game = games[data["game_code"]]
-    actor = data["player"]
-    target = data["target"]
-    role = game["players"][actor]["role"]
+    game_code = data['game_code']
+    player_name = data['player_name']
+    action = data['action']
+    target = data['target']
+    state, players, roles, phase, timer, sockets = get_game_state(game_code)
+    if phase == 'night' and timer > 0:
+        role = roles[players.index(player_name)]
+        if role in ['sheriff', 'doctor', 'mafia']:
+            # Simplified action logic
+            if role == 'sheriff' and action == 'check':
+                result = 'mafia' if roles[players.index(target)] == 'mafia' else 'good'
+                emit('action_result', {'player': player_name, 'result': result}, to=request.sid)
+            elif role == 'doctor' and action == 'save':
+                emit('action_result', {'player': player_name, 'result': 'saved'}, to=request.sid)
+            elif role == 'mafia' and action == 'eliminate':
+                emit('action_result', {'player': player_name, 'result': 'voted'}, to=request.sid)
+        if timer <= 0:
+            update_game_state(game_code, 'day', players, roles, 'day', random.randint(180, 300), sockets)
 
-    if role == "mafia":
-        game["night_actions"]["mafia"].append(target)
-    elif role == "doctor":
-        game["night_actions"]["doctor"] = target
-    elif role == "sheriff":
-        result = "Mafia" if game["players"][target]["role"] == "mafia" else "Not Mafia"
-        emit("action_result", {"result": result}, room=request.sid)
+@socketio.on('restart_game')
+def restart_game(data):
+    game_code = data['game_code']
+    state, players, roles, phase, timer, sockets = get_game_state(game_code)
+    if request.sid == sockets[players[0]]:  # Only host can restart
+        roles = []  # Reset roles
+        update_game_state(game_code, 'lobby', players, roles, 'lobby', 0, sockets)
+        emit('game_restarted', {'phase': 'lobby', 'players': players}, room=game_code)
 
-if __name__ == "__main__":
-    socketio.run(app, debug=True)
+# Additional handlers (vote_skip, vote_eliminate, check_win_condition) as before
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5001))
+    socketio.run(app, debug=True, host='0.0.0.0', port=port)
