@@ -9,7 +9,7 @@ function createGame() {
     }).then(response => response.json())
       .then(data => {
           window.location.href = `/game?code=${data.game_code}&player=${playerName}`;
-      });
+      }).catch(error => console.error('Error creating game:', error));
 }
 
 function joinGame() {
@@ -26,7 +26,7 @@ function joinGame() {
           } else {
               alert(data.message);
           }
-      });
+      }).catch(error => console.error('Error joining game:', error));
 }
 
 socket.on('connect', () => {
@@ -39,9 +39,18 @@ socket.on('connect', () => {
     socket.on('game_state', (data) => {
         updatePlayers(data.players, data.roles);
         updatePhase(data.phase, data.timer);
+        // Show start button if in lobby and enough players (simplified: assume first player is host)
+        if (data.phase === 'lobby' && data.players.length >= 5 && data.players[0] === playerName) {
+            document.getElementById('start-btn-container').innerHTML = '<button id="start-game-btn" class="mt-4 bg-red-600 text-white p-2 rounded w-full" onclick="startGame()">Start Game</button>';
+        }
+    });
+
+    socket.on('player_joined', (data) => {
+        updatePlayers(data.players, []);  // Update player list without roles (lobby phase)
     });
 
     socket.on('game_started', (data) => {
+        updatePlayers(data.players, data.roles);  // Update with roles on start
         updatePhase(data.phase, 60);
     });
 
@@ -55,14 +64,24 @@ socket.on('connect', () => {
     });
 });
 
+function startGame() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const gameCode = urlParams.get('code');
+    socket.emit('start_game', { game_code: gameCode });
+}
+
 function updatePlayers(players, roles) {
     const playersList = document.getElementById('players-list');
     playersList.innerHTML = '';
-    if (players && roles) {
+    if (players && roles && roles.length > 0) {
         players.forEach((player, index) => {
-            const role = roles[index].startsWith('dead_') ? 'dead' : roles[index];
+            const role = roles[index] ? (roles[index].startsWith('dead_') ? 'dead' : roles[index]) : 'pending';
             const icon = role === 'mafia' ? '👹' : '😇';
             playersList.innerHTML += `<div>${player} ${role === 'dead' ? '(Dead)' : ''} ${icon}</div>`;
+        });
+    } else {
+        players.forEach(player => {
+            playersList.innerHTML += `<div>${player}</div>`;
         });
     }
 }
