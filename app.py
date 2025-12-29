@@ -2,7 +2,7 @@ from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import random
 import sqlite3
-from datetime import datetime, timedelta
+import os
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key'
@@ -35,13 +35,23 @@ def update_game_state(game_code, state, players, roles, phase, timer):
     conn.commit()
     conn.close()
 
-# Role assignment logic
+# Role assignment logic (deferred until game start)
 def assign_roles(player_count):
+    if player_count < 5:
+        return ['villager'] * player_count  # Safe fallback for small counts
     roles = ['villager'] * player_count
     mafia_count = max(2, (player_count + 3) // 4)  # 1 mafia per 4 players, min 2
+    if mafia_count > player_count // 2:
+        mafia_count = player_count // 2  # Prevent too many mafia
     roles[-mafia_count:] = ['mafia'] * mafia_count
-    roles[random.randrange(1, player_count-1)] = 'doctor'  # Avoid first/last for balance
-    roles[random.randrange(1, player_count-1)] = 'sheriff'
+    # Place doctor and sheriff only if enough players
+    if player_count >= 3:
+        doc_index = random.randrange(0, player_count)
+        roles[doc_index] = 'doctor'
+        sher_index = random.randrange(0, player_count)
+        while sher_index == doc_index:  # Avoid overlap
+            sher_index = random.randrange(0, player_count)
+        roles[sher_index] = 'sheriff'
     random.shuffle(roles)
     return roles
 
@@ -49,11 +59,15 @@ def assign_roles(player_count):
 def index():
     return render_template('index.html')
 
+@app.route('/game')
+def game():
+    return render_template('game.html')
+
 @app.route('/create_game', methods=['POST'])
 def create_game():
     game_code = ''.join(random.choices('0123456789', k=6))
     players = [request.json['player_name']]
-    roles = assign_roles(1)  # Initial role for host
+    roles = []  # Defer roles until start
     update_game_state(game_code, 'lobby', str(players), str(roles), 'lobby', 0)
     return jsonify({'game_code': game_code})
 
@@ -67,8 +81,7 @@ def join_game():
         roles = eval(roles_str)
         if player_name not in players and len(players) < 16:
             players.append(player_name)
-            roles = assign_roles(len(players))
-            update_game_state(game_code, state, str(players), str(roles), phase, timer)
+            update_game_state(game_code, state, str(players), str(roles), phase, timer)  # No role assignment yet
             socketio.emit('player_joined', {'player_name': player_name, 'players': players}, room=game_code)
         return jsonify({'status': 'success', 'players': players})
     return jsonify({'status': 'error', 'message': 'Game not found'})
@@ -89,9 +102,11 @@ def on_join(data):
 def start_game(data):
     game_code = data['game_code']
     state, players_str, roles_str, phase, timer = get_game_state(game_code)
-    if state == 'lobby' and len(eval(players_str)) >= 5:
-        update_game_state(game_code, 'night', players_str, roles_str, 'night', 60)
-        emit('game_started', {'phase': 'night'}, room=game_code)
+    players = eval(players_str)
+    if state == 'lobby' and len(players) >= 5:
+        roles = assign_roles(len(players))
+        update_game_state(game_code, 'night', players_str, str(roles), 'night', 60)
+        emit('game_started', {'phase': 'night', 'roles': roles}, room=game_code)  # Emit roles (private per player in real impl)
 
 @socketio.on('night_action')
 def night_action(data):
@@ -154,4 +169,4 @@ def check_win_condition(players, roles):
     return None
 
 if __name__ == '__main__':
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
+    socketio.run(app, debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5001)))
